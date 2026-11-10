@@ -989,9 +989,61 @@
             .medication-body { padding: 1rem; }
             .modal-content { margin: 0.5rem; max-height: 92vh; overflow-y: auto; }
         }
+        /* ===== DASHBOARD: barra de impressão e gráficos em SVG (usados na impressão do navegador) ===== */
+        .dashboard-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .dashboard-bar h2 {
+            font-size: 1.25rem;
+            color: var(--text-primary);
+        }
+
+        .print-svg {
+            display: none;
+        }
+
+        .print-svg svg {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
         @media print {
-            .header-controls, .search-filter-section, .charts-section, .tabs, .actions { display: none !important; }
-            body { background: white; }
+            :root, body, body.dark-mode {
+                --bg-primary: #ffffff;
+                --bg-secondary: #ffffff;
+                --bg-tertiary: #f3f4f6;
+                --text-primary: #000000;
+                --text-secondary: #333333;
+                --text-tertiary: #444444;
+                --border-color: #999999;
+                --border-light: #999999;
+            }
+            body, body.dark-mode {
+                background: #ffffff !important;
+                color: #000000 !important;
+                padding: 0 !important;
+            }
+            /* Sai só o que é interativo: botões, filtros, abas, lista de cards, avisos e modais */
+            .header-controls, .header-info .btn-outline, .lgpd-banner, .search-filter-section,
+            .tabs, .dashboard-bar button, #medications, #pending, #toast, .modal {
+                display: none !important;
+            }
+            /* Entra: cartões, gráficos e relatório detalhado */
+            #report { display: block !important; }
+            .chart-wrapper { display: none !important; }
+            .print-svg { display: block !important; }
+            .stat-card, .chart-container { box-shadow: none !important; break-inside: avoid; page-break-inside: avoid; }
+            .report-section { box-shadow: none !important; }
+            .report-table thead { display: table-header-group; }
+            .report-table tr { break-inside: avoid; page-break-inside: avoid; }
+            .report-table th, .report-table td { border: 1px solid #999; font-size: 10px; }
         }
     </style>
 </head>
@@ -1046,6 +1098,12 @@
             </div>
         </div>
 
+        <!-- Dashboard: cartoes, graficos e relatorio detalhado -->
+        <div class="dashboard-bar">
+            <h2>📊 Dashboard</h2>
+            <button class="btn-primary btn-small" type="button" onclick="printDashboard()" aria-label="Imprimir dashboard completo com graficos e relatorio detalhado">🖨️ Imprimir dashboard completo</button>
+        </div>
+
         <!-- Statistics -->
         <div class="stats-grid">
             <div class="stat-card">
@@ -1073,12 +1131,14 @@
                 <div class="chart-wrapper">
                     <canvas id="dayChart"></canvas>
                 </div>
+                <div class="print-svg" id="dayChartPrint" aria-hidden="true"></div>
             </div>
             <div class="chart-container">
                 <h3>✅ Status Geral</h3>
                 <div class="chart-wrapper">
                     <canvas id="statusChart"></canvas>
                 </div>
+                <div class="print-svg" id="statusChartPrint" aria-hidden="true"></div>
             </div>
         </div>
 
@@ -1204,7 +1264,11 @@
                 <label>Tipo de documento</label>
                 <div class="print-type-group">
                     <label class="print-type-option">
-                        <input type="radio" name="printType" value="geral" checked onchange="updatePrintModalUI()">
+                        <input type="radio" name="printType" value="dashboard" checked onchange="updatePrintModalUI()">
+                        <span><strong>📊 Dashboard completo</strong><small>Cartões de totais, gráficos e relatório detalhado de todos os participantes, de cima para baixo, igual à tela.</small></span>
+                    </label>
+                    <label class="print-type-option">
+                        <input type="radio" name="printType" value="geral" onchange="updatePrintModalUI()">
                         <span><strong>📋 Relatório geral</strong><small>Todos os participantes em uma lista única, agrupados por nome, com resumo. Para a equipe de medicação.</small></span>
                     </label>
                     <label class="print-type-option">
@@ -1214,7 +1278,7 @@
                 </div>
             </div>
 
-            <div class="form-group">
+            <div class="form-group" id="printParticipantsGroup">
                 <label>Participantes</label>
                 <div class="print-participants-toolbar">
                     <button type="button" class="link-btn" onclick="printSelectAll(true)">Selecionar todos</button>
@@ -1231,9 +1295,9 @@
                     <label><input type="checkbox" checked disabled> Horários programados (sempre exibidos)</label>
                     <label><input type="checkbox" id="printOptTaken" checked> Data/hora ministrados (o ✔ sempre aparece)</label>
                     <label><input type="checkbox" id="printOptObs" checked> Incluir observações</label>
-                    <label><input type="checkbox" id="printOptSign" checked> Linhas para assinatura</label>
+                    <label id="printOptSignWrap"><input type="checkbox" id="printOptSign" checked> Linhas para assinatura</label>
                     <label id="printOptNotesWrap"><input type="checkbox" id="printOptNotes" checked> Espaço para anotações da família</label>
-                    <label><input type="checkbox" id="printOptBlank"> Imprimir em branco (sem marcações, para preencher à mão)</label>
+                    <label id="printOptBlankWrap"><input type="checkbox" id="printOptBlank"> Imprimir em branco (sem marcações, para preencher à mão)</label>
                 </div>
             </div>
 
@@ -1474,28 +1538,14 @@
 
         // ===== STATISTICS =====
         function updateStatistics() {
-            let totalParticipants = new Set(medicacoes.map(m => (m.pessoa || '').trim().toLowerCase())).size;
-            let totalPending = 0;
-            let totalAdministered = 0;
-
-            medicacoes.forEach(med => {
-                ['sexta', 'sabado', 'domingo'].forEach(dia => {
-                    if (med.dias[dia] && med.dias[dia].ativo) {
-                        const horarios = med.dias[dia].horarios;
-                        const taken = horarios.filter(h => h.taken).length;
-                        totalAdministered += taken;
-                        totalPending += horarios.length - taken;
-                    }
-                });
-            });
-
-            const total = totalAdministered + totalPending;
-            const rate = total > 0 ? Math.round((totalAdministered / total) * 100) : 0;
-
-            document.getElementById('totalParticipants').textContent = totalParticipants;
-            document.getElementById('totalPending').textContent = totalPending;
-            document.getElementById('totalAdministered').textContent = totalAdministered;
-            document.getElementById('completionRate').textContent = rate + '%';
+            const s = getEstatisticasGerais();
+            document.getElementById('totalParticipants').textContent = s.participantes;
+            document.getElementById('totalPending').textContent = s.pendentes;
+            document.getElementById('totalAdministered').textContent = s.administradas;
+            document.getElementById('completionRate').textContent = s.taxa + '%';
+            // Versões SVG dos gráficos, usadas quando a própria página é impressa (Ctrl+P / menu do navegador)
+            document.getElementById('dayChartPrint').innerHTML = svgBarrasDias(s.porDia);
+            document.getElementById('statusChartPrint').innerHTML = svgRosca(s.administradas, s.pendentes);
         }
 
         // ===== CHARTS =====
@@ -2303,13 +2353,22 @@
             const sel = document.querySelectorAll('.print-pessoa-cb:checked').length;
             document.getElementById('printSelectedCount').textContent = `${sel} de ${total} selecionado${sel !== 1 ? 's' : ''}`;
             const tipo = getPrintType();
+            const dash = tipo === 'dashboard';
+            // Dashboard usa todos os participantes e não tem assinatura, anotações nem modo em branco
+            document.getElementById('printParticipantsGroup').style.display = dash ? 'none' : '';
+            document.getElementById('printOptSignWrap').style.display = dash ? 'none' : '';
+            document.getElementById('printOptBlankWrap').style.display = dash ? 'none' : '';
             document.getElementById('printOptNotesWrap').style.display = tipo === 'individual' ? 'flex' : 'none';
             const btn = document.getElementById('printGoBtn');
-            btn.disabled = sel === 0;
-            btn.style.opacity = sel === 0 ? '0.5' : '1';
-            btn.textContent = tipo === 'individual'
-                ? `🖨️ Imprimir ${sel} ficha${sel !== 1 ? 's' : ''}`
-                : '🖨️ Imprimir relatório geral';
+            btn.disabled = !dash && sel === 0;
+            btn.style.opacity = btn.disabled ? '0.5' : '1';
+            if (dash) {
+                btn.textContent = '🖨️ Imprimir dashboard completo';
+            } else if (tipo === 'individual') {
+                btn.textContent = `🖨️ Imprimir ${sel} ficha${sel !== 1 ? 's' : ''}`;
+            } else {
+                btn.textContent = '🖨️ Imprimir relatório geral';
+            }
         }
 
         function getPrintOptions() {
@@ -2325,6 +2384,16 @@
         }
 
         function executePrint() {
+            if (getPrintType() === 'dashboard') {
+                if (medicacoes.length === 0) {
+                    showToast('Nenhum dado para imprimir', 'error');
+                    return;
+                }
+                if (openPrintWindow(buildDashboardReport(getPrintOptions()), 'Dashboard de Medicação', dashboardPrintCss())) {
+                    closePrintModal();
+                }
+                return;
+            }
             const nomes = [...document.querySelectorAll('.print-pessoa-cb:checked')].map(cb => cb.value);
             if (nomes.length === 0) {
                 showToast('Selecione ao menos um participante', 'error');
@@ -2547,13 +2616,13 @@
             return html;
         }
 
-        function openPrintWindow(bodyHtml, title) {
+        function openPrintWindow(bodyHtml, title, extraCss = '') {
             const w = window.open('', '_blank');
             if (!w) {
                 showToast('Permita pop-ups neste site para imprimir', 'error');
                 return false;
             }
-            const doc = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>${escapeHtml(title)}</title><style>${printStyles()}</style></head><body>
+            const doc = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>${escapeHtml(title)}</title><style>${printStyles()}${extraCss}</style></head><body>
                 <div class="print-bar"><span>📄 ${escapeHtml(title)} — confira e clique em Imprimir (ou salve em PDF).</span>
                 <button onclick="window.print()">🖨️ Imprimir / Salvar PDF</button><button class="sec" onclick="window.close()">Fechar</button></div>
                 <div class="content">${bodyHtml}</div>
@@ -2564,6 +2633,206 @@
             w.focus();
             setTimeout(() => { try { w.print(); } catch (e) {} }, 400);
             return true;
+        }
+
+        // ===== DASHBOARD: números únicos para cartões, gráficos e impressão =====
+        // Cartões, gráficos e impressão usam esta função: todos os participantes, sem os filtros da lista
+        function getEstatisticasGerais() {
+            const participantes = new Set(medicacoes.map(m => (m.pessoa || '').trim().toLowerCase())).size;
+            const porDia = PRINT_DIAS.map(([key, nome]) => ({ key, nome, tomadas: 0, pendentes: 0 }));
+            let administradas = 0;
+            let pendentes = 0;
+            medicacoes.forEach(med => {
+                porDia.forEach(dia => {
+                    const d = med.dias[dia.key];
+                    if (d && d.ativo) {
+                        const tomadas = d.horarios.filter(h => h.taken).length;
+                        const pend = d.horarios.length - tomadas;
+                        administradas += tomadas;
+                        pendentes += pend;
+                        dia.tomadas += tomadas;
+                        dia.pendentes += pend;
+                    }
+                });
+            });
+            const total = administradas + pendentes;
+            const taxa = total > 0 ? Math.round((administradas / total) * 100) : 0;
+            return { participantes, administradas, pendentes, taxa, porDia };
+        }
+
+        // Barras "Medicações por Dia" em SVG: nítido na impressão e sem depender do Chart.js
+        function svgBarrasDias(porDia) {
+            const W = 340, H = 240, x0 = 40, x1 = 330, y0 = 16, y1 = 186;
+            const maior = Math.max(0, ...porDia.map(d => Math.max(d.tomadas, d.pendentes)));
+            if (maior === 0) {
+                return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sem doses programadas"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="13" fill="#444">Sem doses programadas</text></svg>`;
+            }
+            const passo = Math.max(1, Math.ceil(maior / 4));
+            const topo = passo * Math.ceil(maior / passo);
+            const yDe = v => y1 - (v / topo) * (y1 - y0);
+            const grupo = (x1 - x0) / porDia.length;
+            const larg = Math.min(34, grupo * 0.3);
+            let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Medicações por dia: tomadas e pendentes">`;
+            for (let v = 0; v <= topo; v += passo) {
+                const y = yDe(v).toFixed(1);
+                s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="#d1d5db" stroke-width="1"/>`;
+                s += `<text x="${x0 - 6}" y="${(yDe(v) + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="#444">${v}</text>`;
+            }
+            porDia.forEach((d, i) => {
+                const cx = x0 + i * grupo + grupo / 2;
+                [[d.tomadas, '#059669', cx - larg - 2], [d.pendentes, '#d97706', cx + 2]].forEach(([v, cor, x]) => {
+                    const h = (v / topo) * (y1 - y0);
+                    s += `<rect x="${x.toFixed(1)}" y="${(y1 - h).toFixed(1)}" width="${larg.toFixed(1)}" height="${h.toFixed(1)}" fill="${cor}"/>`;
+                    s += `<text x="${(x + larg / 2).toFixed(1)}" y="${(y1 - h - 4).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="bold" fill="#111">${v}</text>`;
+                });
+                s += `<text x="${cx.toFixed(1)}" y="${y1 + 16}" text-anchor="middle" font-size="11" fill="#111">${d.nome}</text>`;
+            });
+            s += `<line x1="${x0}" y1="${y1}" x2="${x1}" y2="${y1}" stroke="#555" stroke-width="1"/>`;
+            s += `<rect x="${x0}" y="${H - 14}" width="10" height="10" fill="#059669"/>`;
+            s += `<text x="${x0 + 14}" y="${H - 5}" font-size="11" fill="#111">Tomadas</text>`;
+            s += `<rect x="${x0 + 90}" y="${H - 14}" width="10" height="10" fill="#d97706"/>`;
+            s += `<text x="${x0 + 104}" y="${H - 5}" font-size="11" fill="#111">Pendentes</text>`;
+            return s + '</svg>';
+        }
+
+        // Rosca "Status Geral" em SVG, desenhada com caminhos preenchidos (renderiza igual em qualquer leitor de SVG)
+        function svgSetorAnel(cx, cy, rOut, rIn, a0, a1, cor) {
+            const pt = (r, a) => `${(cx + r * Math.cos(a)).toFixed(2)} ${(cy + r * Math.sin(a)).toFixed(2)}`;
+            const grande = (a1 - a0) > Math.PI ? 1 : 0;
+            const d = `M ${pt(rOut, a0)} A ${rOut} ${rOut} 0 ${grande} 1 ${pt(rOut, a1)} L ${pt(rIn, a1)} A ${rIn} ${rIn} 0 ${grande} 0 ${pt(rIn, a0)} Z`;
+            return `<path d="${d}" fill="${cor}"/>`;
+        }
+
+        function svgAnelCheio(cx, cy, rOut, rIn, cor) {
+            const circ = r => `M ${cx - r} ${cy} A ${r} ${r} 0 1 0 ${cx + r} ${cy} A ${r} ${r} 0 1 0 ${cx - r} ${cy} Z`;
+            return `<path d="${circ(rOut)} ${circ(rIn)}" fill="${cor}" fill-rule="evenodd"/>`;
+        }
+
+        function svgRosca(tomadas, pendentes) {
+            const W = 300, H = 240, cx = 80, cy = 112, rOut = 72, rIn = 50;
+            const total = tomadas + pendentes;
+            const ini = -Math.PI / 2; // começa às 12 horas e segue no sentido horário
+            let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Status geral: ${tomadas} administradas e ${pendentes} pendentes">`;
+            if (total === 0) {
+                s += svgAnelCheio(cx, cy, rOut, rIn, '#e5e7eb');
+            } else if (tomadas === 0) {
+                s += svgAnelCheio(cx, cy, rOut, rIn, '#d97706');
+            } else if (pendentes === 0) {
+                s += svgAnelCheio(cx, cy, rOut, rIn, '#059669');
+            } else {
+                const fim = ini + (tomadas / total) * 2 * Math.PI;
+                s += svgSetorAnel(cx, cy, rOut, rIn, ini, fim, '#059669');
+                s += svgSetorAnel(cx, cy, rOut, rIn, fim, ini + 2 * Math.PI, '#d97706');
+            }
+            const pct = total > 0 ? Math.round((tomadas / total) * 100) : 0;
+            s += `<text x="${cx}" y="${cy + 6}" text-anchor="middle" font-size="22" font-weight="bold" fill="#111">${total > 0 ? pct + '%' : '—'}</text>`;
+            s += `<text x="${cx}" y="${cy + 24}" text-anchor="middle" font-size="10" fill="#444">administradas</text>`;
+            // Legenda: rótulo à esquerda e número alinhado à direita (sem tspan, para não sobrepor)
+            const lx = 168, rx = 292;
+            s += `<rect x="${lx}" y="84" width="11" height="11" fill="#059669"/>`;
+            s += `<text x="${lx + 16}" y="94" font-size="12" fill="#111">Administradas</text>`;
+            s += `<text x="${rx}" y="94" text-anchor="end" font-size="12" font-weight="bold" fill="#111">${tomadas}</text>`;
+            s += `<rect x="${lx}" y="106" width="11" height="11" fill="#d97706"/>`;
+            s += `<text x="${lx + 16}" y="116" font-size="12" fill="#111">Pendentes</text>`;
+            s += `<text x="${rx}" y="116" text-anchor="end" font-size="12" font-weight="bold" fill="#111">${pendentes}</text>`;
+            s += `<text x="${lx}" y="140" font-size="11" fill="#444">Total de doses: ${total}</text>`;
+            return s + '</svg>';
+        }
+
+        // Relatório detalhado para impressão: mesmas colunas da aba Relatório, ordenado por participante
+        function tabelaRelatorioDetalhado(opts) {
+            const ordenados = [...medicacoes].sort((a, b) =>
+                (a.pessoa || '').localeCompare(b.pessoa || '', 'pt-BR') ||
+                (a.medicamento || '').localeCompare(b.medicamento || '', 'pt-BR'));
+            let linhas = '';
+            ordenados.forEach(med => {
+                PRINT_DIAS.forEach(([key, nome]) => {
+                    const d = med.dias[key];
+                    if (!d || !d.ativo) return;
+                    const st = statusDia(d, opts);
+                    const obsDia = (d.observacao || '').trim();
+                    let obs = obsDia ? `<div>📝 ${escapeHtml(obsDia)}</div>` : '';
+                    d.horarios.forEach(h => {
+                        if (h.obs && h.obs.trim()) {
+                            obs += `<div>🕐 ${escapeHtml(h.horario)}: ${escapeHtml(h.obs.trim())}</div>`;
+                        }
+                    });
+                    linhas += `<tr>
+                        <td>${escapeHtml(med.pessoa)}</td>
+                        <td>${escapeHtml(medicamentoComObs(med))}</td>
+                        <td>${nome}</td>
+                        <td>${renderDoses(d.horarios, opts)}</td>
+                        <td class="${st.cls}">${st.txt}</td>
+                        ${opts.showObs ? `<td>${obs || '—'}</td>` : ''}
+                    </tr>`;
+                });
+            });
+            if (!linhas) {
+                linhas = `<tr><td colspan="${opts.showObs ? 6 : 5}" style="text-align:center">Nenhuma dose programada</td></tr>`;
+            }
+            return `<table class="dash-table">
+                <thead><tr><th>Participante</th><th>Medicamento</th><th>Dia</th><th>Horários / doses</th><th>Situação</th>${opts.showObs ? '<th>Observações</th>' : ''}</tr></thead>
+                <tbody>${linhas}</tbody>
+            </table>`;
+        }
+
+        function dashboardPrintCss() {
+            return `
+                .sec-title { font-size: 14px; margin: 14px 0 6px 0; border-left: 4px solid #111; padding-left: 6px; page-break-after: avoid; break-after: avoid; }
+                .dash-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+                .dash-card { border: 1px solid #999; border-top: 4px solid #111; border-radius: 4px; padding: 8px 6px; text-align: center; page-break-inside: avoid; break-inside: avoid; }
+                .dash-card.warn { border-top-color: #d97706; }
+                .dash-card.ok { border-top-color: #059669; }
+                .dash-card .n { display: block; font-size: 22px; font-weight: bold; }
+                .dash-card .l { display: block; font-size: 10px; color: #444; text-transform: uppercase; }
+                .dash-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+                .dash-chart { border: 1px solid #999; border-radius: 4px; padding: 6px 8px; page-break-inside: avoid; break-inside: avoid; }
+                .dash-chart h3 { margin: 0 0 4px 0; font-size: 12px; }
+                .dash-chart svg { display: block; width: 100%; height: auto; }
+                .dash-table thead { display: table-header-group; }
+                .dash-table tr { page-break-inside: avoid; break-inside: avoid; }
+                .dash-table td, .dash-table th { font-size: 10.5px; }
+                .dash-table td div { margin-bottom: 2px; }
+            `;
+        }
+
+        function buildDashboardReport(opts) {
+            const s = getEstatisticasGerais();
+            // Dashboard: sem modo em branco e sem assinatura/anotações; "data/hora" segue a caixa do modal
+            // (mesmo se o modo em branco estiver marcado, que fica oculto neste tipo)
+            const o = {
+                ...opts,
+                blank: false,
+                sign: false,
+                notes: false,
+                showTaken: !!document.getElementById('printOptTaken').checked
+            };
+            let html = '<div class="sheet last">';
+            html += printHeader('Dashboard de Medicação');
+            html += `<div class="dash-cards">
+                <div class="dash-card"><span class="n">${s.participantes}</span><span class="l">Total de Participantes</span></div>
+                <div class="dash-card warn"><span class="n">${s.pendentes}</span><span class="l">Pendentes de Tomar</span></div>
+                <div class="dash-card ok"><span class="n">${s.administradas}</span><span class="l">Medicações Administradas</span></div>
+                <div class="dash-card"><span class="n">${s.taxa}%</span><span class="l">Taxa de Conclusão</span></div>
+            </div>`;
+            html += `<div class="dash-charts">
+                <div class="dash-chart"><h3>📊 Medicações por Dia</h3>${svgBarrasDias(s.porDia)}</div>
+                <div class="dash-chart"><h3>✅ Status Geral</h3>${svgRosca(s.administradas, s.pendentes)}</div>
+            </div>`;
+            html += '<h2 class="sec-title">Relatório detalhado</h2>';
+            html += tabelaRelatorioDetalhado(o);
+            html += lgpdNote();
+            html += '</div>';
+            return html;
+        }
+
+        // Impressão do dashboard completo (botão do painel e opção "Dashboard completo" do modal)
+        function printDashboard() {
+            if (medicacoes.length === 0) {
+                showToast('Nenhum dado para imprimir', 'error');
+                return;
+            }
+            openPrintWindow(buildDashboardReport(getPrintOptions()), 'Dashboard de Medicação', dashboardPrintCss());
         }
 
         // ===== AUTOCOMPLETE =====
@@ -2635,6 +2904,5 @@
         loadEventName();
         loadData();
     </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a5870cf9afb8c27c',t:'MTc5NDMzNDYxMQ=='};var l=window.parent.location,o;try{o=new URL(l.origin).origin}catch(e){try{o=new URL(new URL(l.href).origin).origin}catch(e){o=''}}var u='/cdn-cgi/challenge-platform/scripts/jsd/main.js?ray=a5870cf9afb8c27c',a=document.createElement('script');a.src=o?new URL(u,o).href:u;document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a5876571dc4a2829',t:'MTc5NDMzODIzNQ=='};var l=window.parent.location,o;try{o=new URL(l.origin).origin}catch(e){try{o=new URL(new URL(l.href).origin).origin}catch(e){o=''}}var u='/cdn-cgi/challenge-platform/scripts/jsd/main.js?ray=a5876571dc4a2829',a=document.createElement('script');a.src=o?new URL(u,o).href:u;document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
-
